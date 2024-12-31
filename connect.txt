@@ -1,0 +1,136 @@
+import faiss
+import re
+from langchain_community.chat_models import ChatOllama
+from langchain.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate, ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
+
+# 문서 로딩
+loaders = [
+    PyPDFLoader('자서전 가상 100문100답.pdf'),
+    PyPDFLoader('개인이력서.pdf')
+]
+
+# 텍스트 분할
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=100)
+all_splits = []
+
+for loader in loaders:
+    pages = loader.load_and_split()
+    splits = text_splitter.split_documents(pages)
+    all_splits.extend(splits)
+
+model_name = "jhgan/ko-sroberta-multitask"
+model_kwargs = {'device': 'cuda'}
+encode_kwargs = {'normalize_embeddings': False}
+embeddings = HuggingFaceEmbeddings(model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs)
+
+# 벡터 저장소 생성
+db = Chroma.from_documents(all_splits, embeddings)
+llm = ChatOllama(model="ggml-model-Q5_K_M/Modelfile:latest")
+
+# 첫 번째 질문 프롬프트 설정
+system_template = """
+AI는 자서전 작가입니다.
+답변내용에 줄간격은 없습니다. 
+PDF 문서를 통해 6가지 제목을 생성합니다.
+제목의 설명은 생성하지 않습니다.
+생전에 사용자가 제공한 정보를 바탕으로 자서전을 풍부하고 감동적으로 구성해야 합니다.
+제공된 PDF 문서에 포함된 내용만 사용해야 하며, 가상의 가족 관계, 취미, 장소, 직업 등의 정보를 포함하지 않아야 합니다.
+{context}
+"""
+
+human_template = "{question}"
+
+chat_prompt = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(system_template),
+    HumanMessagePromptTemplate.from_template(human_template)
+])
+
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=db.as_retriever(search_kwargs={"k": 1}),
+    chain_type_kwargs={"prompt": chat_prompt}
+)
+
+def ask_question(question):
+    context = qa_chain.run(question)
+    return context
+
+# 질문 예시
+question = "사용자가 제공한 정보를 바탕으로 자서전을 원하는데 6가지 제목은 뭐가 좋을까요?"
+context = ask_question(question)
+print(f"질문: {question}")
+print(f"{context}")
+
+chapter_titles = str(context).split("\n")
+
+# 두 번째 질문 프롬프트 설정 (context 연결)
+def create_second_prompt(context):
+    system_template1 = """
+    AI는 자서전 작가입니다. 
+    생전에 사용자가 제공한 정보를 바탕으로 자서전을 풍부하고 감동적으로 구성해야 합니다.
+    제공된 PDF 문서에 포함된 내용만 사용해야 하며, 가상의 가족 관계, 취미, 장소, 직업 등의 정보를 포함하지 않아야 합니다.
+    {context}
+    여섯가지 챕터중에 첫번째 챕터를 서정적으로 작성합니다.
+    """
+    
+    human_template1 = "{question}"
+    chat_prompt1 = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_template1),
+        HumanMessagePromptTemplate.from_template(human_template1)
+    ])
+    
+    return chat_prompt1
+
+# 첫 번째 챕터 작성
+first_chapter_question = f"{chapter_titles[0]}를 작성해주세요"
+chat_prompt1 = create_second_prompt(context)
+
+qa_chain1 = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=db.as_retriever(search_kwargs={"k": 1}),
+    chain_type_kwargs={"prompt": chat_prompt1}
+)
+
+context_first_chapter = qa_chain1.run(first_chapter_question)
+print(f"질문: {first_chapter_question}")
+print(f"답변: {context_first_chapter}")
+
+# 두 번째 챕터 작성 (context 연결)
+def create_third_prompt(context):
+    system_template2 = """
+    AI는 자서전 작가입니다. 
+    생전에 사용자가 제공한 정보를 바탕으로 자서전을 풍부하고 감동적으로 구성해야 합니다.
+    제공된 PDF 문서에 포함된 내용만 사용해야 하며, 가상의 가족 관계, 취미, 장소, 직업 등의 정보를 포함하지 않아야 합니다.
+    {context}
+    여섯가지 챕터중에 두번째 챕터를 서정적으로 작성합니다.
+    """
+    
+    human_template2 = "{question}"
+    chat_prompt2 = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_template2),
+        HumanMessagePromptTemplate.from_template(human_template2)
+    ])
+    
+    return chat_prompt2
+
+# 두 번째 챕터 작성
+second_chapter_question = f"{chapter_titles[1]}를 작성해주세요"
+chat_prompt2 = create_third_prompt(context)
+
+qa_chain2 = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=db.as_retriever(search_kwargs={"k": 1}),
+    chain_type_kwargs={"prompt": chat_prompt2}
+)
+
+context_second_chapter = qa_chain2.run(second_chapter_question)
+print(f"질문: {second_chapter_question}")
+print(f"답변: {context_second_chapter}")
